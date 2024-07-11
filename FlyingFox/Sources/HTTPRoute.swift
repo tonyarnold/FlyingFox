@@ -74,13 +74,19 @@ public struct HTTPRoute: Sendable {
     public enum Component: Sendable, Equatable {
         case wildcard
         case caseInsensitive(String)
+        case parameter(String)
 
         public init(_ string: String) {
             switch string {
             case "*":
                 self = .wildcard
             default:
-                self = .caseInsensitive(string)
+                if string.hasPrefix(":") {
+                    let name = String(string.dropFirst())
+                    self = .parameter(name)
+                } else {
+                    self = .caseInsensitive(string)
+                }
             }
         }
     }
@@ -144,8 +150,16 @@ public struct HTTPRoute: Sendable {
     }
 
     @available(*, deprecated, renamed: "methods", message: "Use ``methods`` instead")
-    public var method: String {
-        fatalError("Use ``methods`` instead.")
+    public var method: Component {
+        if methods == HTTPMethod.allMethods {
+            return .wildcard
+        } else {
+            let firstMethod = HTTPMethod.sortedMethods
+                .filter { methods.contains($0) }
+                .first!
+                .rawValue
+            return .caseInsensitive(firstMethod)
+        }
     }
 }
 
@@ -157,6 +171,8 @@ public extension HTTPRoute.Component {
             return true
         case .caseInsensitive(let text):
             return node.caseInsensitiveCompare(text) == .orderedSame
+        case .parameter:
+            return true
         }
     }
 
@@ -164,11 +180,27 @@ public extension HTTPRoute.Component {
         guard let node = node else { return false }
         return component.patternMatch(to: node)
     }
+
+    static func ~= (component: HTTPRoute.Component, nodes: [String]) -> Bool {
+        nodes.contains { component.patternMatch(to: $0) }
+    }
 }
 
 public extension HTTPRoute {
 
-    private func pathComponent(for index: Int) -> Component? {
+    var pathParameters: [String: Int] {
+        path.enumerated().reduce(into: [:]) { partialResult, item in
+            switch item.element {
+                case let .parameter(name):
+                    partialResult[name] = item.offset
+                case .caseInsensitive,
+                     .wildcard:
+                    break
+            }
+        }
+    }
+
+    func pathComponent(for index: Int) -> Component? {
         if path.indices.contains(index) {
             return path[index]
         } else if path.last == .wildcard {
@@ -177,10 +209,10 @@ public extension HTTPRoute {
         return nil
     }
 
-    private func patternMatch(request: HTTPRequest) -> Bool {
+    private func patternMatch(request: HTTPRequest) async -> Bool {
         guard patternMatch(query: request.query),
               patternMatch(headers: request.headers),
-              patternMatch(body: request.bodySequence) else { return false }
+              await patternMatch(body: request.bodySequence) else { return false }
 
         let nodes = request.path.split(separator: "/", omittingEmptySubsequences: true)
         guard self.methods.contains(request.method) else {
@@ -210,18 +242,21 @@ public extension HTTPRoute {
 
     private func patternMatch(headers request: [HTTPHeader: String]) -> Bool {
         return headers.allSatisfy { header, value in
-            value ~= request[header]
+            value ~= request.values(for: header)
         }
     }
 
-    private func patternMatch(body request: HTTPBodySequence) -> Bool {
+    private func patternMatch(body request: HTTPBodySequence) async -> Bool {
         guard let body = body else { return true }
 
-        switch request.storage {
-        case .complete(let data):
-            return body.evaluate(data)
-        case .sequence:
-            // HTTPBodyPattern cannot be applied when the body is not completely loaded (large requests)
+        guard request.canReplay else {
+            // body is large and can only be iterated one-time only so should not match it
+            return false
+        }
+
+        do {
+            return try await body.evaluate(request.get())
+        } catch {
             return false
         }
     }
@@ -263,11 +298,11 @@ public extension HTTPRoute {
 
     @available(*, unavailable, message: "renamed: ~= async")
     static func ~= (route: HTTPRoute, request: HTTPRequest) -> Bool {
-        route.patternMatch(request: request)
+        fatalError()
     }
 
     static func ~= (route: HTTPRoute, request: HTTPRequest) async -> Bool {
-        route.patternMatch(request: request)
+        await route.patternMatch(request: request)
     }
 }
 

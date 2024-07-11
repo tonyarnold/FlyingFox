@@ -39,6 +39,8 @@ public struct HTTPRequest: Sendable {
     public var headers: [HTTPHeader: String]
     public var bodySequence: HTTPBodySequence
 
+    @TaskLocal static var matchedRoute: HTTPRoute?
+
     public var bodyData: Data {
         get async throws {
             try await bodySequence.get()
@@ -84,25 +86,24 @@ public struct HTTPRequest: Sendable {
     }
 }
 
-@available(*, unavailable, message: "HTTPRequest will soon remove conformance to Equatable")
-extension HTTPRequest: Equatable {
-
-    public static func == (lhs: HTTPRequest, rhs: HTTPRequest) -> Bool {
-        guard case .complete(let lhsBody) = lhs.bodySequence.storage,
-              case .complete(let rhsBody) = rhs.bodySequence.storage else {
-            return false
-        }
-        return lhs.method == rhs.method &&
-               lhs.version == rhs.version &&
-               lhs.path == rhs.path &&
-               lhs.query == rhs.query &&
-               lhs.headers == rhs.headers &&
-               lhsBody == rhsBody
-    }
-}
-
 extension HTTPRequest {
     var shouldKeepAlive: Bool {
         headers[.connection]?.caseInsensitiveCompare("keep-alive") == .orderedSame
+    }
+
+    public func pathParameter(for identifier: String) -> String? {
+        let components = path
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { String($0) }
+
+        guard
+            components.isEmpty == false,
+            let parameterIndex = Self.matchedRoute?.pathParameters[identifier],
+            components.count < parameterIndex
+        else {
+            return nil
+        }
+
+        return components[parameterIndex]
     }
 }

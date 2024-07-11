@@ -1,9 +1,9 @@
 //
-//  ConsumingAsyncSequence.swift
+//  HTTPClientTests.swift
 //  FlyingFox
 //
-//  Created by Simon Whitty on 17/02/2022.
-//  Copyright © 2022 Simon Whitty. All rights reserved.
+//  Created by Simon Whitty on 8/06/2024.
+//  Copyright © 2024 Simon Whitty. All rights reserved.
 //
 //  Distributed under the permissive MIT license
 //  Get the latest version from here:
@@ -29,30 +29,29 @@
 //  SOFTWARE.
 //
 
-import FlyingSocks
+@_spi(Private) import struct FlyingFox._HTTPClient
+@testable import FlyingFox
+@testable import FlyingSocks
+import XCTest
+import Foundation
 
-final class ConsumingAsyncSequence<Element>: AsyncBufferedSequence, AsyncBufferedIteratorProtocol {
+final class HTTPClientTests: XCTestCase {
 
-    private var iterator: AnySequence<Element>.Iterator
-    private(set) var index: Int = 0
+#if canImport(Darwin)
+    func testClient() async throws {
+        // given
+        let server = HTTPServer(address: .loopback(port: 0))
+        let task = Task { try await server.start() }
+        defer { task.cancel() }
+        let client = _HTTPClient()
 
-    init<T: Sequence>(_ sequence: T) where T.Element == Element {
-        self.iterator = AnySequence(sequence).makeIterator()
+        // when
+        let port = try await server.waitForListeningPort()
+        let response = try await client.sendHTTPRequest(HTTPRequest.make(), to: .loopback(port: port))
+
+        // then
+        XCTAssertEqual(response.statusCode, .notFound)
     }
+#endif
 
-    func makeAsyncIterator() -> ConsumingAsyncSequence<Element> { self }
-
-    func next() async throws -> Element? {
-        iterator.next()
-    }
-
-    func nextBuffer(atMost count: Int) async throws -> [Element]? {
-        var buffer = [Element]()
-        while buffer.count < count,
-              let element = iterator.next() {
-            buffer.append(element)
-        }
-        index += buffer.count
-        return buffer.count > 0 ? buffer : nil
-    }
 }

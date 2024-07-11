@@ -32,6 +32,7 @@
 import Foundation
 import FlyingSocks
 @_spi(Private) import struct FlyingSocks.AsyncDataSequence
+@_spi(Private) import struct FlyingSocks.AsyncBufferedCollection
 
 public struct HTTPBodySequence: Sendable, AsyncSequence {
     public typealias Element = Data
@@ -43,23 +44,41 @@ public struct HTTPBodySequence: Sendable, AsyncSequence {
     }
 
     public init(data: Data) {
-        self.storage = .complete(data)
+        self.init(data: data, bufferSize: 4096)
     }
 
-    public init(from bytes: some AsyncChunkedSequence<UInt8>, count: Int) {
-        self.storage = .sequence(
+    public init(from bytes: some AsyncBufferedSequence<UInt8>, count: Int) {
+        self.storage = .dataSequence(
             AsyncDataSequence(from: bytes, count: count, chunkSize: 4096)
         )
     }
+
+#if compiler(>=5.9)
+    public init(from bytes: some AsyncBufferedSequence<UInt8>) {
+        self.init(from: bytes, bufferSize: 4096)
+    }
+
+    init(from bytes: some AsyncBufferedSequence<UInt8>, bufferSize: Int) {
+        self.storage = .sequence(.init(bytes: bytes, bufferSize: bufferSize))
+    }
+#endif
 
     public init(file url: URL) throws {
         try self.init(file: url, chunkSize: 4096)
     }
 
-    init(from bytes: some AsyncChunkedSequence<UInt8>, count: Int, chunkSize: Int) {
-        self.storage = .sequence(
+    init(from bytes: some AsyncBufferedSequence<UInt8>, count: Int, chunkSize: Int) {
+        self.storage = .dataSequence(
             AsyncDataSequence(from: bytes, count: count, chunkSize: chunkSize)
         )
+    }
+
+    init(data: Data, bufferSize: Int) {
+#if compiler(>=5.9)
+        self.storage = .sequence(.init(data: data, bufferSize: bufferSize))
+#else
+        self.storage = .complete(data)
+#endif
     }
 
     init(file url: URL, maxSizeForComplete: Int = 10_485_760, chunkSize: Int) throws {
@@ -67,7 +86,7 @@ public struct HTTPBodySequence: Sendable, AsyncSequence {
         if count <= maxSizeForComplete {
             self.storage = try .complete(Data(contentsOf: url))
         } else {
-            self.storage = try .sequence(
+            self.storage = try .dataSequence(
                 AsyncDataSequence(file: FileHandle(forReadingFrom: url),
                                   count: count,
                                   chunkSize: chunkSize)
@@ -81,15 +100,43 @@ public struct HTTPBodySequence: Sendable, AsyncSequence {
 
     enum Storage: @unchecked Sendable {
         case complete(Data)
-        case sequence(AsyncDataSequence)
+        case dataSequence(AsyncDataSequence)
+
+#if compiler(>=5.9)
+        case sequence(Sequence)
+
+        struct Sequence {
+            var sequence: any AsyncBufferedSequence<UInt8>
+            var count: Int?
+            var bufferSize: Int
+            var canReplay: Bool
+
+            init(data: Data, bufferSize: Int) {
+                self.sequence = AsyncBufferedCollection(data)
+                self.count = data.count
+                self.bufferSize = bufferSize
+                self.canReplay = true
+            }
+
+            init(bytes: some AsyncBufferedSequence<UInt8>, bufferSize: Int) {
+                self.sequence = HTTPChunkedTransferEncoder(bytes: bytes)
+                self.bufferSize = bufferSize
+                self.canReplay = false
+            }
+        }
+#endif
     }
 
-    public var count: Int {
+    public var count: Int? {
         switch storage {
         case .complete(let data):
             return data.count
+        case .dataSequence(let sequence):
+            return sequence.count
+#if compiler(>=5.9)
         case .sequence(let sequence):
             return sequence.count
+#endif
         }
     }
 
@@ -97,16 +144,33 @@ public struct HTTPBodySequence: Sendable, AsyncSequence {
         switch storage {
         case .complete(let data):
             return data
-        case .sequence(let sequence):
+        case .dataSequence(let sequence):
             return try await sequence.reduce(into: Data()) {
                 $0.append($1)
             }
+#if compiler(>=5.9)
+        case .sequence(let sequence):
+            return try await sequence.sequence.reduce(into: Data()) {
+                $0.append($1)
+            }
+#endif
         }
     }
 
     func flushIfNeeded() async throws {
-        guard case .sequence(let sequence) = storage else { return }
+        guard case .dataSequence(let sequence) = storage else { return }
         try await sequence.flushIfNeeded()
+    }
+
+    var canReplay: Bool {
+        switch storage {
+        case .complete: return true
+        case .dataSequence: return false
+#if compiler(>=5.9)
+        case .sequence(let sequence):
+            return sequence.canReplay
+#endif
+        }
     }
 }
 
@@ -117,13 +181,21 @@ public extension HTTPBodySequence {
 
         private var storage: Internal
         private var isComplete: Bool = false
+        private var bufferSize: Int = 0
 
         fileprivate init(storage: Storage) {
             switch storage {
             case .complete(let data):
                 self.storage = .complete(data)
+                self.bufferSize = 0
+            case .dataSequence(let sequence):
+                self.storage = .dataIterator(sequence.makeAsyncIterator())
+                self.bufferSize = 0
+#if compiler(>=5.9)
             case .sequence(let sequence):
-                self.storage = .iterator(sequence.makeAsyncIterator())
+                self.storage = .iterator(sequence.sequence.makeAsyncIterator())
+                self.bufferSize = sequence.bufferSize
+#endif
             }
         }
 
@@ -133,19 +205,38 @@ public extension HTTPBodySequence {
             case let .complete(data):
                 isComplete = true
                 return data
-            case var .iterator(iterator):
+            case var .dataIterator(iterator):
                 guard let result = try await iterator.next() else {
+                    isComplete = true
+                    return nil
+                }
+                storage = .dataIterator(iterator)
+                return result
+#if compiler(>=5.9)
+            case var .iterator(iterator):
+                guard let result = try await getNextBuffer(&iterator) else {
                     isComplete = true
                     return nil
                 }
                 storage = .iterator(iterator)
                 return result
+#endif
             }
+        }
+
+        private func getNextBuffer(_ iterator: inout some AsyncBufferedIteratorProtocol<UInt8>) async throws -> Data? {
+            guard let buffer = try await iterator.nextBuffer(atMost: bufferSize) else {
+                return nil
+            }
+            return Data(buffer)
         }
 
         enum Internal: @unchecked Sendable {
             case complete(Data)
-            case iterator(AsyncDataSequence.AsyncIterator)
+            case dataIterator(AsyncDataSequence.AsyncIterator)
+#if compiler(>=5.9)
+            case iterator(any AsyncBufferedIteratorProtocol<UInt8>)
+#endif
         }
     }
 }

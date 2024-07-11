@@ -1,9 +1,9 @@
 //
-//  ConsumingAsyncSequence.swift
+//  HTTPClient.swift
 //  FlyingFox
 //
-//  Created by Simon Whitty on 17/02/2022.
-//  Copyright © 2022 Simon Whitty. All rights reserved.
+//  Created by Simon Whitty on 8/06/2024.
+//  Copyright © 2024 Simon Whitty. All rights reserved.
 //
 //  Distributed under the permissive MIT license
 //  Get the latest version from here:
@@ -31,28 +31,35 @@
 
 import FlyingSocks
 
-final class ConsumingAsyncSequence<Element>: AsyncBufferedSequence, AsyncBufferedIteratorProtocol {
+@_spi(Private)
+public struct _HTTPClient {
 
-    private var iterator: AnySequence<Element>.Iterator
-    private(set) var index: Int = 0
+    public func sendHTTPRequest(_ request: HTTPRequest, to address: some SocketAddress) async throws -> HTTPResponse {
+        let socket = try await AsyncSocket.connected(to: address)
+        try await socket.writeRequest(request)
+        let response = try await socket.readResponse()
+        // if streaming very large responses then you shouldn't close here
+        // maybe better to close in deinit instead
+        try? socket.close()
+        return response
+    }
+}
 
-    init<T: Sequence>(_ sequence: T) where T.Element == Element {
-        self.iterator = AnySequence(sequence).makeIterator()
+@_spi(Private)
+public extension AsyncSocket {
+    func writeRequest(_ request: HTTPRequest) async throws {
+        try await write(HTTPEncoder.encodeRequest(request))
     }
 
-    func makeAsyncIterator() -> ConsumingAsyncSequence<Element> { self }
-
-    func next() async throws -> Element? {
-        iterator.next()
+    func readResponse() async throws -> HTTPResponse {
+        try await HTTPDecoder.decodeResponse(from: bytes)
     }
 
-    func nextBuffer(atMost count: Int) async throws -> [Element]? {
-        var buffer = [Element]()
-        while buffer.count < count,
-              let element = iterator.next() {
-            buffer.append(element)
-        }
-        index += buffer.count
-        return buffer.count > 0 ? buffer : nil
+    func writeFrame(_ frame: WSFrame) async throws {
+        try await write(WSFrameEncoder.encodeFrame(frame))
+    }
+
+    func readFrame() async throws -> WSFrame {
+        try await WSFrameEncoder.decodeFrame(from: bytes)
     }
 }

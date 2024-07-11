@@ -1,9 +1,9 @@
 //
-//  ConsumingAsyncSequence.swift
+//  HTTPHeaderTests.swift
 //  FlyingFox
 //
-//  Created by Simon Whitty on 17/02/2022.
-//  Copyright © 2022 Simon Whitty. All rights reserved.
+//  Created by Simon Whitty on 11/07/2024.
+//  Copyright © 2024 Simon Whitty. All rights reserved.
 //
 //  Distributed under the permissive MIT license
 //  Get the latest version from here:
@@ -29,30 +29,42 @@
 //  SOFTWARE.
 //
 
-import FlyingSocks
+@testable import FlyingFox
+import Foundation
+import XCTest
 
-final class ConsumingAsyncSequence<Element>: AsyncBufferedSequence, AsyncBufferedIteratorProtocol {
+final class HTTPHeaderTests: XCTestCase {
 
-    private var iterator: AnySequence<Element>.Iterator
-    private(set) var index: Int = 0
+    func testStringValue() {
+        // given
+        var headers = [HTTPHeader: String]()
+        headers[.transferEncoding] = "Identity"
 
-    init<T: Sequence>(_ sequence: T) where T.Element == Element {
-        self.iterator = AnySequence(sequence).makeIterator()
-    }
+        XCTAssertEqual(
+            headers[.transferEncoding],
+            "Identity"
+        )
 
-    func makeAsyncIterator() -> ConsumingAsyncSequence<Element> { self }
+        XCTAssertEqual(
+            headers.values(for: .transferEncoding),
+            ["Identity"]
+        )
 
-    func next() async throws -> Element? {
-        iterator.next()
-    }
+        XCTAssertEqual(
+            headers.values(for: .contentType),
+            []
+        )
+    
+        headers.addValue("chunked", for: .transferEncoding)
 
-    func nextBuffer(atMost count: Int) async throws -> [Element]? {
-        var buffer = [Element]()
-        while buffer.count < count,
-              let element = iterator.next() {
-            buffer.append(element)
-        }
-        index += buffer.count
-        return buffer.count > 0 ? buffer : nil
+        XCTAssertEqual(
+            headers[.transferEncoding],
+            "Identity, chunked"
+        )
+
+        XCTAssertEqual(
+            headers.values(for: .transferEncoding),
+            ["Identity", "chunked"]
+        )
     }
 }

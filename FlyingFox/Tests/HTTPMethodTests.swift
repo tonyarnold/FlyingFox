@@ -1,9 +1,9 @@
 //
-//  ConsumingAsyncSequence.swift
+//  HTTPMethodTests.swift
 //  FlyingFox
 //
-//  Created by Simon Whitty on 17/02/2022.
-//  Copyright © 2022 Simon Whitty. All rights reserved.
+//  Created by Simon Whitty on 11/07/2024.
+//  Copyright © 2024 Simon Whitty. All rights reserved.
 //
 //  Distributed under the permissive MIT license
 //  Get the latest version from here:
@@ -29,30 +29,16 @@
 //  SOFTWARE.
 //
 
-import FlyingSocks
+@testable import FlyingFox
+import Foundation
+import XCTest
 
-final class ConsumingAsyncSequence<Element>: AsyncBufferedSequence, AsyncBufferedIteratorProtocol {
+final class HTTPMethodTests: XCTestCase {
 
-    private var iterator: AnySequence<Element>.Iterator
-    private(set) var index: Int = 0
-
-    init<T: Sequence>(_ sequence: T) where T.Element == Element {
-        self.iterator = AnySequence(sequence).makeIterator()
-    }
-
-    func makeAsyncIterator() -> ConsumingAsyncSequence<Element> { self }
-
-    func next() async throws -> Element? {
-        iterator.next()
-    }
-
-    func nextBuffer(atMost count: Int) async throws -> [Element]? {
-        var buffer = [Element]()
-        while buffer.count < count,
-              let element = iterator.next() {
-            buffer.append(element)
-        }
-        index += buffer.count
-        return buffer.count > 0 ? buffer : nil
+    func testStringValue() {
+        XCTAssertEqual(
+            Set([HTTPMethod("fish"), .DELETE, .POST]).stringValue,
+            "POST,DELETE,FISH"
+        )
     }
 }

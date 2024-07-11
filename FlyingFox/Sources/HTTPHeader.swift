@@ -60,5 +60,24 @@ public extension HTTPHeader {
     static let webSocketAccept  = HTTPHeader("Sec-WebSocket-Accept")
     static let webSocketKey     = HTTPHeader("Sec-WebSocket-Key")
     static let webSocketVersion = HTTPHeader("Sec-WebSocket-Version")
+    static let transferEncoding = HTTPHeader("Transfer-Encoding")
     static let upgrade          = HTTPHeader("Upgrade")
+}
+
+public extension [HTTPHeader: String] {
+
+    func values(for header: HTTPHeader) -> [String] {
+        let value = self[header] ?? ""
+        return value
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { String($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    mutating func setValues(_ values: [String], for header: HTTPHeader) {
+        self[header] = values.joined(separator: ", ")
+    }
+
+    mutating func addValue(_ value: String, for header: HTTPHeader) {
+        setValues(values(for: header) + [value], for: header)
+    }
 }
